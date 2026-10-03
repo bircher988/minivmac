@@ -211,6 +211,10 @@ LOCALPROC dbglog_close0(void)
 
 #include "CONTROLM.h"
 
+#if EmLocalTalk
+#include "LOCALTLK.h"
+#endif
+
 /* --- text translation --- */
 
 LOCALPROC NativeStrFromCStr(char *r, char *s)
@@ -3978,6 +3982,42 @@ LOCALFUNC blnr Screen_Init(void)
 
 #if MayFullScreen
 LOCALVAR blnr GrabMachine = falseblnr;
+/*
+	Mac68k Studio (browser build): the mouse grab (relative mouse mode, what games that
+	read raw mouse deltas need) without the emulator's own full screen, which recreates
+	the SDL window and does not survive that in Emscripten. The page calls
+	Module._wasm_set_grab(1/0) from a click and takes the pointer lock itself.
+*/
+LOCALVAR blnr ForceGrab = falseblnr;
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+EMSCRIPTEN_KEEPALIVE int wasm_set_grab(int on)
+{
+	ForceGrab = (0 != on) ? trueblnr : falseblnr;
+	return GrabMachine ? 1 : 0;
+}
+EMSCRIPTEN_KEEPALIVE int wasm_get_grab(void)
+{
+	return GrabMachine ? 1 : 0;
+}
+#endif
+#endif
+
+#if defined(__EMSCRIPTEN__) && (SDL_MAJOR_VERSION >= 2)
+#include <emscripten.h>
+/*
+	Browser build: the page inserts a disk while the Mac runs, the way a file
+	dropped onto the native emulator's window is inserted (SDL_DROPFILE, which
+	SDL does not deliver in the browser). The page has written the image into
+	the in-memory file system first (FS.writeFile) and calls
+	Module.ccall('wasm_insert_disk', 'number', ['string'], [path]).
+	Returns 1 when the disk went into a drive, 0 when there is no free drive
+	or the file is not a disk image.
+*/
+EMSCRIPTEN_KEEPALIVE int wasm_insert_disk(char *path)
+{
+	return Sony_Insert1a(path, falseblnr) ? 1 : 0;
+}
 #endif
 
 #if MayFullScreen
@@ -4901,9 +4941,11 @@ LOCALPROC CheckForSavedTasks(void)
 
 #if MayFullScreen
 	if (GrabMachine != (
+		(ForceGrab
 #if VarFullScreen
-		UseFullScreen &&
+		|| UseFullScreen
 #endif
+		) &&
 		! (gTrueBackgroundFlag || CurSpeedStopped)))
 	{
 		GrabMachine = ! GrabMachine;
@@ -5222,6 +5264,9 @@ LOCALFUNC blnr InitOSGLU(void)
 	if (MySound_Init())
 #endif
 	if (CreateMainWindow())
+#if EmLocalTalk
+	if (InitLocalTalk())
+#endif
 	if (WaitForRom())
 	{
 		return trueblnr;
@@ -5239,6 +5284,10 @@ LOCALPROC UnInitOSGLU(void)
 	if (MacMsgDisplayed) {
 		MacMsgDisplayOff();
 	}
+
+#if EmLocalTalk
+	UnInitLocalTalk();
+#endif
 
 	RestoreKeyRepeat();
 #if MayFullScreen

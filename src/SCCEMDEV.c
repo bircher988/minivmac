@@ -462,6 +462,19 @@ typedef struct {
 	/* otherwise EndOfFrame always false */
 	blnr EndOfFrame;
 #endif
+#if EmLocalTalk
+	/*
+		SDLC: an abort sequence (7+ ones) was seen on the receive line.
+		LocalTalk frames end with an abort, so this bit going 1 means
+		"the frame is over, the line is idle"; it goes 0 with the next
+		flag. The LocalTalk driver's transmit path relies on the
+		External/Status interrupt this generates when it defers to a
+		frame in progress (WR15 Break/Abort IE + WR1 Ext Int Enable).
+	*/
+	blnr BreakAbort;
+	blnr BreakAbortIE; /* WR15 bit 7 */
+	blnr ExtIP; /* External/Status interrupt pending, until Reset Ext/Status Ints */
+#endif
 #if 0 /* ParityErr always false */
 	blnr ParityErr;
 #endif
@@ -486,7 +499,7 @@ typedef struct {
 #if 0 /* don't care about DCD_IE, always true */
 	blnr DCD_IE;
 #endif
-#if SCC_TrackMore /* don't care about BreakAbortIE */
+#if SCC_TrackMore && ! EmLocalTalk /* don't care about BreakAbortIE */
 	blnr BreakAbortIE;
 #endif
 #if SCC_TrackMore /* don't care about Baud */
@@ -643,6 +656,11 @@ LOCALPROC CheckSCCInterruptFlag(void)
 	if (SCC.a[1].TxIP && SCC.a[1].TxIE) {
 		SCC.SCC_Interrupt_Type = SCC_B_Tx_Empty;
 	} else
+#if EmLocalTalk
+	if (SCC.a[1].ExtIP && SCC.a[1].ExtIE) {
+		SCC.SCC_Interrupt_Type = SCC_B_Ext;
+	} else
+#endif
 	{
 		SCC.SCC_Interrupt_Type = 0;
 	}
@@ -731,6 +749,11 @@ LOCALPROC SCC_ResetChannel(int chan)
 #if EmLocalTalk
 	/* otherwise EndOfFrame always false */
 	SCC.a[chan].EndOfFrame = falseblnr;
+#endif
+#if EmLocalTalk
+	SCC.a[chan].BreakAbort = falseblnr;
+	SCC.a[chan].BreakAbortIE = trueblnr; /* WR15 resets to 0xF8 */
+	SCC.a[chan].ExtIP = falseblnr;
 #endif
 /* RR 3 */
 #if EmLocalTalk || SCC_TrackMore
@@ -823,7 +846,7 @@ LOCALPROC SCC_ResetChannel(int chan)
 #if 0 /* SyncHuntIE usually false */
 	SCC.a[chan].SyncHuntIE = trueblnr;
 #endif
-#if SCC_TrackMore /* don't care about BreakAbortIE */
+#if SCC_TrackMore && ! EmLocalTalk /* don't care about BreakAbortIE */
 	SCC.a[chan].BreakAbortIE = trueblnr;
 #endif
 
@@ -872,6 +895,24 @@ LOCALPROC SCC_TxBuffPut(ui3r Data)
 }
 
 /*
+	The receive line changes between "frame in progress" and "abort seen,
+	line idle". Each change is an External/Status condition; it raises an
+	interrupt when enabled and not already latched.
+*/
+LOCALPROC SCC_SetBreakAbort(int chan, blnr v)
+{
+	if (SCC.a[chan].BreakAbort != v) {
+		SCC.a[chan].BreakAbort = v;
+		if (SCC.a[chan].BreakAbortIE && SCC.a[chan].ExtIE
+			&& (! SCC.a[chan].ExtIP))
+		{
+			SCC.a[chan].ExtIP = trueblnr;
+		}
+		CheckSCCInterruptFlag();
+	}
+}
+
+/*
 	This function is called once all the normal packet bytes have been
 	received.
 */
@@ -894,6 +935,9 @@ LOCALPROC rx_complete(void)
 	LT_RxBuffer = nullpr;
 
 	SCC.a[1].EndOfFrame = trueblnr;
+
+	/* closing flag, then the abort sequence: the line goes idle */
+	SCC_SetBreakAbort(1, trueblnr);
 }
 
 LOCALPROC SCC_RxBuffAdvance(void)
@@ -951,6 +995,7 @@ GLOBALPROC LocalTalkTick(void)
 			SCC.a[1].EndOfFrame = falseblnr;
 			SCC.a[1].RxChrAvail = trueblnr;
 			SCC.a[1].SyncHunt = falseblnr;
+			SCC_SetBreakAbort(1, falseblnr); /* opening flag */
 
 			SCC_RxBuffAdvance();
 			/* We can update the rx interrupt if enabled */
@@ -1104,7 +1149,7 @@ LOCALFUNC ui3r SCC_GetRR0(int chan)
 	/* happens on boot always */
 
 	return 0
-#if 0 /* BreakAbort always false */
+#if EmLocalTalk
 		| (SCC.a[chan].BreakAbort ? (1 << 7) : 0)
 #endif
 		| (SCC.a[chan].TxUnderrun ? (1 << 6) : 0)
@@ -1490,6 +1535,17 @@ LOCALPROC SCC_PutWR0(ui3r Data, int chan)
 			SCC_DbgLogChanCmnd(chan, "Reset Ext/Status Ints");
 #endif
 			/* happens on boot always */
+#if EmLocalTalk
+			SCC.a[chan].ExtIP = falseblnr;
+			CheckSCCInterruptFlag();
+			/*
+				In SDLC mode Sync/Hunt reflects the receiver's hunt
+				state, which this command does not change; reading
+				it as "flag seen" would make the LocalTalk driver
+				defer its transmit for nothing.
+			*/
+			if (! ((0 != chan) && (2 == SCC.a[chan].SyncMode)))
+#endif
 			SCC.a[chan].SyncHunt = falseblnr;
 #if 0 /* only in sync mode */
 			SCC.a[chan].TxUnderrun = falseblnr;
@@ -1576,6 +1632,9 @@ LOCALPROC SCC_PutWR1(ui3r Data, int chan)
 #if SCC_dolog
 			SCC_DbgLogChanChngBit(chan, "EXT INT Enable",
 				NewExtIE);
+#endif
+#if EmLocalTalk
+			CheckSCCInterruptFlag();
 #endif
 			/*
 				set to 1 on start up, set to 0 in MacCheck
@@ -2759,7 +2818,7 @@ LOCALPROC SCC_PutWR15(ui3r Data, int chan)
 		ReportAbnormalID(0x0743, "Tx underrun/EOM IE");
 	}
 
-#if SCC_TrackMore
+#if EmLocalTalk || SCC_TrackMore
 	{
 		blnr NewBreakAbortIE = (Data & Bit7) != 0;
 		if (SCC.a[chan].BreakAbortIE != NewBreakAbortIE) {

@@ -1170,10 +1170,22 @@ GLOBALFUNC ui5b VIA1_Access(ui5b Data, blnr WriteMem, CPTR addr)
 			break;
 		case kORA   :
 		case kORA_H :
-			if ((VIA1_D.PCR & 0xE) == 0) {
-				VIA1_ClrInterruptFlag(kIntCA2);
+			/*
+				Only register 1 (ORA with handshake) clears the CA1
+				and CA2 flags. Register 15 (ORA, no handshake) is the
+				one the Macintosh ROM and drivers use as vBufA; if it
+				cleared CA1 too, every access between a vertical
+				blanking edge and its interrupt handler would lose
+				that VBL - the LocalTalk driver does exactly that
+				while reading a frame, so the clock ran slow under
+				network traffic.
+			*/
+			if (kORA_H == addr) {
+				if ((VIA1_D.PCR & 0xE) == 0) {
+					VIA1_ClrInterruptFlag(kIntCA2);
+				}
+				VIA1_ClrInterruptFlag(kIntCA1);
 			}
-			VIA1_ClrInterruptFlag(kIntCA1);
 			if (WriteMem) {
 				VIA1_D.ORA = Data;
 				VIA1_Put_ORA(VIA1_D.DDR_A, VIA1_D.ORA);

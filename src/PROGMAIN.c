@@ -108,6 +108,14 @@ LOCALPROC InterruptReset_Update(void)
 
 LOCALPROC SubTickNotify(int SubTick)
 {
+#if EmLocalTalk
+	/*
+		Look for a received LocalTalk frame on every sub-tick, not only
+		once per tick: a frame otherwise waits up to 16.7 ms in the UDP
+		socket, and a node could take at most 60 frames per second.
+	*/
+	LocalTalkTick();
+#endif
 #if 0
 	dbglog_writeCStr("ending sub tick ");
 	dbglog_writeNum(SubTick);
