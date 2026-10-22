@@ -4387,6 +4387,8 @@ LOCALFUNC blnr CreateMainWindow(void)
 	#if SDL_MAJOR_VERSION >= 3
 	} else
 	if (
+		/* wayland does not support setting window position */
+		strcmp(SDL_GetCurrentVideoDriver(), "wayland") &&
 		!SDL_SetWindowPosition(
 			my_main_wind,
 			NewWindowX,
